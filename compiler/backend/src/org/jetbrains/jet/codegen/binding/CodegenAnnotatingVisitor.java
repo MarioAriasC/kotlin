@@ -22,6 +22,7 @@ import org.jetbrains.annotations.Nullable;
 import org.jetbrains.jet.lang.descriptors.*;
 import org.jetbrains.jet.lang.descriptors.annotations.AnnotationDescriptor;
 import org.jetbrains.jet.lang.descriptors.impl.ClassDescriptorImpl;
+import org.jetbrains.jet.lang.descriptors.impl.MutableClassDescriptor;
 import org.jetbrains.jet.lang.psi.*;
 import org.jetbrains.jet.lang.resolve.BindingContext;
 import org.jetbrains.jet.lang.resolve.BindingTrace;
@@ -32,11 +33,10 @@ import org.jetbrains.jet.lang.resolve.java.PackageClassUtils;
 import org.jetbrains.jet.lang.resolve.name.FqName;
 import org.jetbrains.jet.lang.resolve.name.Name;
 import org.jetbrains.jet.lang.resolve.scopes.JetScope;
+import org.jetbrains.jet.lang.types.JetType;
 import org.jetbrains.jet.lang.types.lang.KotlinBuiltIns;
 
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.Map;
+import java.util.*;
 
 import static org.jetbrains.jet.codegen.CodegenUtil.peekFromStack;
 import static org.jetbrains.jet.codegen.binding.CodegenBinding.*;
@@ -55,6 +55,43 @@ class CodegenAnnotatingVisitor extends JetVisitorVoid {
         this.bindingContext = bindingTrace.getBindingContext();
     }
 
+    private static final ClassDescriptor[] FUNCTIONS;
+    private static final ClassDescriptor[] EXTENSION_FUNCTIONS;
+
+    static {
+        int n = KotlinBuiltIns.FUNCTION_TRAIT_COUNT;
+        FUNCTIONS = new ClassDescriptor[n];
+        EXTENSION_FUNCTIONS = new ClassDescriptor[n];
+
+        for (int i = 0; i < n; i++) {
+            FUNCTIONS[i] = createFunctionImplDescriptor(i, false);
+            EXTENSION_FUNCTIONS[i] = createFunctionImplDescriptor(i, true);
+        }
+    }
+
+    private static ClassDescriptor createFunctionImplDescriptor(int i, boolean isExtension) {
+        JetScope builtInsScope = KotlinBuiltIns.getInstance().getBuiltInsScope();
+        Name name = Name.identifier((isExtension ? "Extension" : "") + "FunctionImpl" + i);
+        ClassDescriptor functionInterface = isExtension
+                                            ? KotlinBuiltIns.getInstance().getFunction(i)
+                                            : KotlinBuiltIns.getInstance().getExtensionFunction(i);
+
+        MutableClassDescriptor functionImpl = new MutableClassDescriptor(
+                builtInsScope.getContainingDeclaration(),
+                builtInsScope,
+                ClassKind.CLASS,
+                false,
+                name
+        );
+        functionImpl.setModality(Modality.FINAL);
+        functionImpl.setVisibility(Visibilities.PUBLIC);
+        List<TypeParameterDescriptor> functionTypeParameters = functionInterface.getDefaultType().getConstructor().getParameters();
+        functionImpl.setTypeParameterDescriptors(functionTypeParameters);
+        functionImpl.createTypeConstructor();
+
+        return functionImpl;
+    }
+
     private ClassDescriptor recordClassForFunction(FunctionDescriptor funDescriptor) {
         ClassDescriptor classDescriptor;
         int arity = funDescriptor.getValueParameters().size();
@@ -67,9 +104,8 @@ class CodegenAnnotatingVisitor extends JetVisitorVoid {
         ((ClassDescriptorImpl)classDescriptor).initialize(
                 false,
                 Collections.<TypeParameterDescriptor>emptyList(),
-                Collections.singleton((funDescriptor.getReceiverParameter() != null
-                                       ? KotlinBuiltIns.getInstance().getExtensionFunction(arity)
-                                       : KotlinBuiltIns.getInstance().getFunction(arity)).getDefaultType()), JetScope.EMPTY,
+                Collections.singleton(getSuperTypeForClosure(funDescriptor, arity)),
+                JetScope.EMPTY,
                 Collections.<ConstructorDescriptor>emptySet(),
                 null,
                 false);
@@ -77,6 +113,15 @@ class CodegenAnnotatingVisitor extends JetVisitorVoid {
         assert PsiCodegenPredictor.checkPredictedClassNameForFun(bindingContext, funDescriptor, classDescriptor);
         bindingTrace.record(CLASS_FOR_FUNCTION, funDescriptor, classDescriptor);
         return classDescriptor;
+    }
+
+    private JetType getSuperTypeForClosure(FunctionDescriptor funDescriptor, int arity) {
+        if (funDescriptor.getReceiverParameter() != null) {
+            return EXTENSION_FUNCTIONS[arity].getDefaultType();
+        }
+        else {
+            return FUNCTIONS[arity].getDefaultType();
+        }
     }
 
     private String inventAnonymousClassName(JetElement declaration) {
