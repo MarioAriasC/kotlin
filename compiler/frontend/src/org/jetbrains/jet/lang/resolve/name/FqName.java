@@ -71,9 +71,34 @@ public class FqName extends FqNameBase {
     }
 
     public static boolean isValid(@Nullable String qualifiedName) {
-        return qualifiedName != null &&
-               FqNameUnsafe.isValid(qualifiedName) &&
-               isValidAfterUnsafeCheck(qualifiedName);
+        if (qualifiedName == null) return false;
+
+        // Check that it is javaName(\.javaName)* or an empty string
+
+        class State {}
+        State BEGINNING = new State();
+        State MIDDLE = new State();
+
+        State state = BEGINNING;
+
+        int length = qualifiedName.length();
+        for (int i = 0; i < length; i++) {
+            char c = qualifiedName.charAt(i);
+            if (state == BEGINNING) {
+                if (!Character.isJavaIdentifierPart(c)) return false;
+                state = MIDDLE;
+            }
+            else if (state == MIDDLE) {
+                if (c == '.') {
+                    state = BEGINNING;
+                }
+                else if (!Character.isJavaIdentifierPart(c)) {
+                    return false;
+                }
+            }
+        }
+
+        return true;
     }
 
     @Override
